@@ -47,7 +47,7 @@ html {
 }
 
 body {
-    background-color: #303952;
+    background-color: #18222D;
     color: #fff;
     padding: 2vmax;
 }
