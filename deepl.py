@@ -7,14 +7,17 @@ import pyppeteer
 from aiogram import Bot, Dispatcher, executor, types
 
 # Read config
-config = configparser.ConfigParser()
+config = configparser.RawConfigParser()
 config.read('../../caf.ini.php')
+
+def ini(section, key):
+    return config['API Settings']['caf_token'].strip('"')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
 # Initialize bot and dispatcher
-bot = Bot(token=config['API Settings']['caf_token'])
+bot = Bot(token=ini('API Settings', 'caf_token'))
 dp = Dispatcher(bot)
 
 # Handlers
