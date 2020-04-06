@@ -1,9 +1,10 @@
 #!/usr/local/bin/python3
 # Copyright 2020 Egor Chekashov
-# DeepL Telegram v0.1
+# DeepL Telegram v0.2
 
 import logging
 import configparser
+import time as t
 from pathlib import Path as p
 import asyncio
 import pyppeteer as pp
@@ -19,9 +20,11 @@ def ini(section, key):
 config = configparser.ConfigParser()
 config.read('../../caf.ini.php')
 TOKEN = ini('API Settings', 'deepl_token')
-ADMINS = [int(ini('API Settings', 'egor'))]
-ADMINS += [int(ini('API Settings', 'jenya'))]
-ADMINS += [int(ini('API Settings', 'vika'))]
+ADMIN = int(ini('API Settings', 'egor'))
+TESTERS = (
+    int(ini('API Settings', 'jenya')),
+    int(ini('API Settings', 'vika'))
+)
 USER_DATA = p('../../deepl-data')
 config.clear()
 
@@ -29,8 +32,8 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
 BASE_URL = "https://www.deepl.com/translator"
-SELECTOR = '[dl-test="translator-target-input"]'
-JS_STR = "document.querySelector('" + SELECTOR + "').value"
+TARGET = '[dl-test="translator-target-input"]'
+TARGET_JS = "document.querySelector('" + TARGET + "').value"
 DEBUG = True
 PUBLIC = False
 ROW_WIDTH = 2
@@ -46,24 +49,27 @@ LANG = {
     'ja': 'Japanese',
     'zh': 'Chinese',
     'pt': 'Portuguese',
-    'pt-br': 'Portuguese (BR)'
+    'pt-br': 'Portuguese (Brazilian)'
 }
-PHRASES = (
-    "Got it, let me see"
-)
 
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
-def user_init(file):
+def user_init(file, uid):
+    """ Creates a new (Chat ID).ini file
+    """
     file.touch()
     config['MAIN'] = {'lang': 'en'}
+    if uid == ADMIN:
+        config.set('MAIN', 'forward', 'on')
     with open(file, 'w') as settings:
         config.write(settings)
     config.clear()
 
 def set_conf(uid, key, value):
+    """ Adds or updates the config key
+    """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
     config.set('MAIN', str(key), str(value))
@@ -72,6 +78,8 @@ def set_conf(uid, key, value):
     config.clear()
 
 def get_conf(uid, key):
+    """ Returns the config value
+    """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
     value = ini('MAIN', key)
@@ -79,6 +87,8 @@ def get_conf(uid, key):
     return value
 
 def del_conf(uid, key):
+    """ Removes the config key
+    """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
     config.remove_option('MAIN', str(key))
@@ -86,28 +96,62 @@ def del_conf(uid, key):
         config.write(settings)
     config.clear()
 
+def sec_to_time(sec):
+    """ Returns the formatted time H:MM:SS
+    """
+    sec = round(sec) if sec > 59 else sec
+    h, m, s = 0, 0, 0
+    m, s = divmod(sec, 60)
+    h, m = divmod(m, 60)
+    ftime = ""
+    ftime += f"{h:d}:" if h else ""
+    ftime += f"{m:02d}:" if m else ""
+    ftime += f"{s:02d}" if h and m else f"{s:.2f} sec"
+    return ftime
+
 
 # Wrappers
-def debug(msg):
-    """ Returns a message if debug is enabled
+def debug(msg, uid):
+    """ Returns a debugging information if enabled
     """
-    if DEBUG:
-        return '👾 Debug: ' + msg + N
+    if DEBUG and (uid == ADMIN or uid in TESTERS):
+        return '🛠 ' + msg + N
     return ""
 
 def in_btn(*args, **kwargs):
+    """ Alias for aiogram method
+    """
     return types.InlineKeyboardButton(*args, **kwargs)
 
 
 # Extract via pyppeteer
-async def translate(uid, txt):
-    lang = get_conf(uid, 'lang')
+async def open_browser():
     browser = await pp.launch()
-    page = await browser.newPage()
+    page = await browser.pages()
+    page = page[0]
+    await page.goto(BASE_URL)
+    await browser.disconnect()
+    return [browser, browser.wsEndpoint]
+
+browser, browser_ep = asyncio.run(open_browser())
+
+async def translate(uid, txt):
+    # Define variables
+    global browser_ep
+    browser = await pp.connect(browserWSEndpoint=browser_ep)
+    page = await browser.pages()
+    page = page[0]
+    lang = get_conf(uid, 'lang')
+    # Sanitize input
+    txt = txt.replace('\n', '%0A')
+    txt = txt.replace('\t', '%09')
+    txt = txt.replace('#', '%23')
+    # Execute
     await page.goto(f"{BASE_URL}#*/{lang}/{txt}")
-    await page.waitForFunction(JS_STR + '.length > 0')
-    result = await page.evaluate(JS_STR)
-    await browser.close()
+    await page.waitForFunction(TARGET_JS + '.length > 0')
+    result = await page.evaluate(TARGET_JS)
+    await page.goto(BASE_URL)
+    await browser.disconnect()
     return result
 
 
@@ -117,18 +161,18 @@ async def start(message: types.Message):
     # Required block
     uid = message.chat.id
     msg = ""
-    if not uid in ADMINS:
-        await message.forward(ADMINS[0], message.text)
-        if not PUBLIC:
+    if uid != ADMIN:
+        await message.forward(ADMIN, message.text)
+        if not PUBLIC and uid not in TESTERS:
             return
     file = p(USER_DATA / f'{uid}.ini')
     # If a new user, create an ini file
     if not file.exists():
-        user_init(file)
-        msg += debug("New user, file was created" + N)
+        user_init(file, uid)
+        msg += debug("New user, file was created" + N, uid)
         msg += f"Nice to meet you, {message.chat.first_name}. "
     else:
-        msg += debug(f"User file exists <b>{uid}.ini</b>" + N)
+        msg += debug(f"User file exists <b>{uid}.ini</b>" + N, uid)
         msg += f"Welcome back, {message.chat.first_name}. "
     # Join and send a message
     msg += "Just send me a message and I'll translate it into English. "
@@ -140,9 +184,9 @@ async def start(message: types.Message):
 async def language(message: types.Message):
     # Required block
     uid = message.chat.id
-    if not uid in ADMINS:
-        await message.forward(ADMINS[0], message.text)
-        if not PUBLIC:
+    if uid != ADMIN:
+        await message.forward(ADMIN, message.text)
+        if not PUBLIC and uid not in TESTERS:
             return
     # Collect buttons for the inline keyboard
     inline_kb = types.InlineKeyboardMarkup(row_width=ROW_WIDTH)
@@ -164,25 +208,32 @@ async def inline_kb_answer(query: types.CallbackQuery):
     msg_id = query.message.message_id
     btn = query.data
     msg = ""
-    msg += debug("uid = " + str(uid))
-    msg += debug("msg_id = " + str(msg_id))
-    msg += debug("btn = " + str(btn) + N)
+    msg += debug("uid = " + str(uid), uid)
+    msg += debug("msg_id = " + str(msg_id), uid)
+    msg += debug("btn = " + str(btn) + N, uid)
     msg += f"Now I'll be translating into {LANG[btn]}"
     set_conf(uid, 'lang', btn)
     await bot.edit_message_text(msg, uid, msg_id)
 
 
 @dp.message_handler()
-async def echo(message: types.Message):
+async def echo_result(message: types.Message):
     # Required block
     uid = message.chat.id
-    msg = "1"
-    if not uid in ADMINS:
-        await message.forward(ADMINS[0], message.text)
-        if not PUBLIC:
+    msg = "Something went wrong 😔"
+    if uid != ADMIN:
+        await message.forward(ADMIN, message.text)
+        if not PUBLIC and uid not in TESTERS:
             return
-    msg = await translate(uid, message.text)
-    await message.answer(msg)
+    t_start = t.time()
+    result = await translate(uid, message.text)
+    t_diff = t.time() - t_start
+    msg = debug(f"Translation took {sec_to_time(t_diff)}" + N, uid)
+    msg += result
+    sent = await message.answer(msg)
+    if uid != ADMIN:
+        await bot.forward_message(ADMIN, sent.chat.id,
+            sent.message_id)
 
 
 if __name__ == '__main__':
