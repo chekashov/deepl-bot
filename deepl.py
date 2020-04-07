@@ -1,10 +1,11 @@
 #!/usr/local/bin/python3
 # Copyright 2020 Egor Chekashov
-# DeepL Telegram v0.2
+# DeepL Telegram v0.3
 
 import logging
 import configparser
 import time as t
+import random as rnd
 from pathlib import Path as p
 import asyncio
 import pyppeteer as pp
@@ -32,14 +33,11 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
 BASE_URL = "https://www.deepl.com/translator"
-TARGET = '[dl-test="translator-target-input"]'
-TARGET_JS = "document.querySelector('" + TARGET + "').value"
-DEBUG = True
-PUBLIC = False
-ROW_WIDTH = 2
+TRG = '[dl-test="translator-target-input"]'
+TRG_JS = "document.querySelector('" + TRG + "').value"
+ROW_WIDTH = 2 # Inline keyboard
 N = "\n"
 LANG = {
-    'en': 'English',
     'de': 'German',
     'fr': 'French',
     'es': 'Spanish',
@@ -49,8 +47,18 @@ LANG = {
     'ja': 'Japanese',
     'zh': 'Chinese',
     'pt': 'Portuguese',
-    'pt-br': 'Portuguese (Brazilian)'
+    'ru': 'Russian',
+    'en': 'English',
+    # 'pt-br': 'Portuguese (Brazilian)'
 }
+PHRASES = (
+    "All right, let\'s see 🔎",
+    "Give me a second, please ⏱",
+    "Looking for better options 👀",
+    "Great, new challenge 💪",
+    "I\'ll be right back 🏃",
+    "I need to think about it 🤔"
+)
 
 
 # Configure logging
@@ -60,9 +68,13 @@ def user_init(file, uid):
     """ Creates a new (Chat ID).ini file
     """
     file.touch()
-    config['MAIN'] = {'lang': 'en'}
-    if uid == ADMIN:
-        config.set('MAIN', 'forward', 'on')
+    if uid != ADMIN:
+        config['MAIN'] = {'lang': 'en'}
+    else:
+        config['MAIN'] = {'lang': 'en',
+                          'forward': 'yes',
+                          'debug': 'yes',
+                          'public': 'no'}
     with open(file, 'w') as settings:
         config.write(settings)
     config.clear()
@@ -96,6 +108,10 @@ def del_conf(uid, key):
         config.write(settings)
     config.clear()
 
+def get_button(conf, txt):
+    icon = '🔳 ' if str_to_bool(get_conf(ADMIN, conf)) else '⬜️ '
+    return icon + txt
+
 def sec_to_time(sec):
     """ Returns the formatted time H:MM:SS
     """
@@ -123,6 +139,13 @@ def in_btn(*args, **kwargs):
     """
     return types.InlineKeyboardButton(*args, **kwargs)
 
+def filter_output(txt):
+    txt = txt.replace(" .", "")
+    return txt
+
+def str_to_bool(txt):
+    return str(txt.lower()) in ("true", "yes", "on", "1")
+
 
 # Extract via pyppeteer
 async def open_browser():
@@ -139,8 +162,7 @@ async def translate(uid, txt):
     # Define variables
     global browser_ep
     browser = await pp.connect(browserWSEndpoint=browser_ep)
-    page = await browser.pages()
-    page = page[0]
+    page = await browser.newPage()
     lang = get_conf(uid, 'lang')
     # Sanitize input
     txt = txt.replace('\n', '%0A')
@@ -148,9 +170,12 @@ async def translate(uid, txt):
     txt = txt.replace('#', '%23')
     # Execute
     await page.goto(f"{BASE_URL}#*/{lang}/{txt}")
-    await page.waitForFunction(TARGET_JS + '.length > 0')
-    result = await page.evaluate(TARGET_JS)
-    await page.goto(BASE_URL)
+    try:
+        await page.waitForFunction(TRG_JS + '.length > 0', timeout=2000)
+    except pp.errors.TimeoutError:
+        pass
+    result = await page.evaluate(TRG_JS)
+    await page.close()
     await browser.disconnect()
     return result
 
@@ -158,6 +183,8 @@ async def translate(uid, txt):
 # Handlers
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
+    """ Starts the bot and creates a profile if it's a new user
+    """
     # Required block
     uid = message.chat.id
     msg = ""
@@ -174,6 +201,7 @@ async def start(message: types.Message):
     else:
         msg += debug(f"User file exists <b>{uid}.ini</b>" + N, uid)
         msg += f"Welcome back, {message.chat.first_name}. "
+    del file
     # Join and send a message
     msg += "Just send me a message and I'll translate it into English. "
     msg += "You can change the translation /language at any time."
@@ -182,6 +210,8 @@ async def start(message: types.Message):
 
 @dp.message_handler(commands=['language'])
 async def language(message: types.Message):
+    """ Sends an interactive message with language selection
+    """
     # Required block
     uid = message.chat.id
     if uid != ADMIN:
@@ -203,6 +233,8 @@ async def language(message: types.Message):
 
 @dp.callback_query_handler(lambda cb: cb.data in LANG.keys())
 async def inline_kb_answer(query: types.CallbackQuery):
+    """ Handles callback after language selection
+    """
     await query.answer("Good choice 👌")
     uid = query.message.chat.id
     msg_id = query.message.message_id
@@ -216,28 +248,78 @@ async def inline_kb_answer(query: types.CallbackQuery):
     await bot.edit_message_text(msg, uid, msg_id)
 
 
-@dp.message_handler()
-async def echo_result(message: types.Message):
+@dp.message_handler(commands=['admin'])
+async def admin_menu(message: types.Message):
+    """ Sends an interactive message with admin settings
+    """
     # Required block
     uid = message.chat.id
-    msg = "Something went wrong 😔"
+    if uid != ADMIN:
+        await message.forward(ADMIN, message.text)
+        return
+    # Collect buttons for the inline keyboard
+    inline_kb = types.InlineKeyboardMarkup(row_width=ROW_WIDTH)
+    for r in range(0, len(SETTINGS), ROW_WIDTH):
+        args = ""
+        for key in dict(list(SETTINGS.items())[0+r:ROW_WIDTH+r]):
+            args += f'in_btn("{SETTINGS[key][1]}", callback_data="{key}"), '
+        args = args.rstrip(', ')
+        exec(f"inline_kb.row({args})", globals(), locals())
+    # Send inline keyboard
+    await message.answer("Welcome back, Commander",
+                         reply_markup=inline_kb)
+
+
+@dp.message_handler()
+async def echo_result(message: types.Message):
+    """ Translates a previous message if it was not a command
+    """
+    # Required block
+    uid = message.chat.id
+    msg = ""
     if uid != ADMIN:
         await message.forward(ADMIN, message.text)
         if not PUBLIC and uid not in TESTERS:
             return
+    sent = await message.answer(rnd.choice(PHRASES))
     t_start = t.time()
     result = await translate(uid, message.text)
-    t_diff = t.time() - t_start
-    msg = debug(f"Translation took {sec_to_time(t_diff)}" + N, uid)
-    msg += result
-    sent = await message.answer(msg)
-    if uid != ADMIN:
-        await bot.forward_message(ADMIN, sent.chat.id,
-            sent.message_id)
+    t_diff = (t.time() - t_start)
+    msg += debug(f"Translation took {sec_to_time(t_diff)}" + N, uid)
+    msg += filter_output(result)
+    if filter_output(result):
+        sent = await bot.edit_message_text(msg, uid, sent.message_id)
+        if uid != ADMIN:
+            await bot.forward_message(ADMIN, sent.chat.id,
+                sent.message_id)
+    else:
+        await bot.delete_message(sent.chat.id, sent.message_id)
 
 
 if __name__ == '__main__':
     if not USER_DATA.exists():
         print("There's no directory for storing settings, creating...")
         USER_DATA.mkdir()
+    file = p(USER_DATA / f'{ADMIN}.ini')
+    if not file.exists():
+        print("There's no admin defaults, creating...")
+        user_init(file, ADMIN)
+    del file
+    SETTINGS = {
+        'forward':  [
+                        get_conf(ADMIN, 'forward'),
+                        get_button('forward', 'Forward')
+                    ],
+        'debug':    [
+                        get_conf(ADMIN, 'debug'),
+                        get_button('debug', 'Debug')
+                    ],
+        'public':   [
+                        get_conf(ADMIN, 'public'),
+                        get_button('public', 'Public')
+                    ]
+    }
+    FORWARD = str_to_bool(SETTINGS['forward'][0])
+    DEBUG = str_to_bool(SETTINGS['debug'][0])
+    PUBLIC = False
     executor.start_polling(dp, skip_updates=True)
