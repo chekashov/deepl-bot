@@ -1,12 +1,27 @@
 #!/usr/local/bin/python3
 # Copyright 2020 Egor Chekashov
-# DeepL Telegram v0.4
 
-import logging
+"""DeepL Telegram v0.4
+
+Telegram bot that translates messages via DeepL Translator.
+The world’s best machine translation - www.deepl.com
+
+Quick start:
+1. Change basic config
+- TOKEN (Telegram Bot Token)
+- ADMIN (admin ID)
+
+2. Run bot in background
+$ python3 deepl.py &
+
+3. Stop bot gracefully
+$ pkill -f 'Python deepl.py'
+"""
+
 import configparser
 import time as t
+import logging
 from pathlib import Path as p
-import asyncio
 import pyppeteer as pp
 from aiogram import Bot, Dispatcher, executor, types
 
@@ -48,8 +63,7 @@ LANG = {
     'zh': 'Chinese',
     'pt': 'Portuguese',
     'ru': 'Russian',
-    'en': 'English',
-    # 'pt-br': 'Portuguese (Brazilian)'
+    'en': 'English'
 }
 
 
@@ -57,7 +71,7 @@ LANG = {
 logging.basicConfig(level=logging.INFO)
 
 def user_init(uid, lang='en'):
-    """ Creates a new (Chat ID).ini file
+    """ Creates a new user profile - (Chat ID).ini
     """
     file = p(USER_DATA / f'{uid}.ini')
     file.touch()
@@ -75,7 +89,7 @@ def user_init(uid, lang='en'):
     config.clear()
 
 def set_conf(uid, key, value, sect='MAIN'):
-    """ Adds or updates the config key
+    """ Adds or updates the profile key
     """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
@@ -85,7 +99,7 @@ def set_conf(uid, key, value, sect='MAIN'):
     config.clear()
 
 def inc_stat(uid, key):
-    """ Increment the config value
+    """ Increment the profile value
     """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
@@ -95,7 +109,7 @@ def inc_stat(uid, key):
     config.clear()
 
 def get_conf(uid, key, sect='MAIN'):
-    """ Returns the config value
+    """ Returns the profile value
     """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
@@ -104,7 +118,7 @@ def get_conf(uid, key, sect='MAIN'):
     return value
 
 def del_conf(uid, key):
-    """ Removes the config key
+    """ Removes the profile key
     """
     file = p(USER_DATA / f'{uid}.ini')
     config.read(file)
@@ -114,6 +128,9 @@ def del_conf(uid, key):
     config.clear()
 
 def check_ver(uid):
+    """ If the version has changed, it takes the user settings
+    and recreates the profile to match the new version
+    """
     try:
         ver = get_conf(uid, 'version', 'STAT')
     except KeyError:
@@ -129,12 +146,15 @@ def check_ver(uid):
 
 # Core functions
 def get_button(conf, txt):
+    """ Imitates radio button, depending on the state of settings
+    """
     icon = '🔳 ' if str_to_bool(get_conf(ADMIN, conf)) else '⬜️ '
     return icon + txt
 
 def update_settings():
-    global SETTINGS
-    SETTINGS = {
+    """ Returns global settings that are stored in RAM
+    """
+    set_dict = {
         'forward': [
             get_conf(ADMIN, 'forward'),
             get_button('forward', 'Forward')
@@ -148,7 +168,7 @@ def update_settings():
             get_button('public', 'Public')
         ]
     }
-    return SETTINGS
+    return set_dict
 
 def sec_to_time(sec):
     """ Returns the formatted time H:MM:SS
@@ -164,9 +184,9 @@ def sec_to_time(sec):
     return ftime
 
 def collect_buttons(btn_dict, close=False, rw=ROW_WIDTH):
+    """ Gets the dictionary and returns the inline keyboard markup
+    """
     buttons = types.InlineKeyboardMarkup(row_width=rw)
-    if btn_dict is SETTINGS:
-        btn_dict = update_settings()
     if close:
         btn_dict['close'] = '❌ Close'
     for r in range(0, len(btn_dict), rw):
@@ -196,16 +216,24 @@ def in_btn(*args, **kwargs):
     return types.InlineKeyboardButton(*args, **kwargs)
 
 def filter_output(txt):
+    """ Removes strange output artifacts
+    """
     txt = txt.replace(" .", "")
     return txt
 
 def str_to_bool(txt):
+    """ Converts true-like values into boolean
+    """
     return str(txt).lower() in ("true", "yes", "on", "1")
 
 def get_glob(key):
+    """ Returns value from global settings
+    """
     return str_to_bool(SETTINGS[key][0])
 
 def set_glob(key, value):
+    """ Changes value in global settings
+    """
     global SETTINGS
     if str(value).lower() in ("true", "yes", "on", "1"):
         SETTINGS[key][0] = 'yes'
@@ -217,19 +245,18 @@ def set_glob(key, value):
 
 # Extract via pyppeteer
 async def open_browser():
+    """ Opens the new Chromium instance
+    """
+    global BROWSER_EP
     browser = await pp.launch()
-    page = await browser.pages()
-    page = page[0]
-    await page.goto(BASE_URL)
     await browser.disconnect()
-    return [browser, browser.wsEndpoint]
+    BROWSER_EP = browser.wsEndpoint
 
-browser, browser_ep = asyncio.run(open_browser())
-
-async def translate(uid, txt):
+async def translate(uid, txt, ep):
+    """ Filters input and returns the translated text
+    """
     # Define variables
-    global browser_ep
-    browser = await pp.connect(browserWSEndpoint=browser_ep)
+    browser = await pp.connect(browserWSEndpoint=ep)
     page = await browser.newPage()
     lang = get_conf(uid, 'lang')
     # Sanitize input
@@ -239,8 +266,8 @@ async def translate(uid, txt):
     # Execute
     await page.goto(f"{BASE_URL}#*/{lang}/{txt}")
     try:
-        TRG_LEN = TRG_JS + '.length > 0'
-        await page.waitForFunction(TRG_LEN, timeout=10000)
+        trg_len = TRG_JS + '.length > 0'
+        await page.waitForFunction(trg_len, timeout=10000)
     except pp.errors.TimeoutError:
         pass
     result = await page.evaluate(TRG_JS)
@@ -304,7 +331,6 @@ async def callback_close(query: types.CallbackQuery):
     uid = query.message.chat.id
     check_ver(uid)
     msg_id = query.message.message_id
-    btn = query.data
     await query.answer("Cleaning up ✨")
     await bot.delete_message(uid, msg_id)
 
@@ -342,6 +368,7 @@ async def callback_admin(query: types.CallbackQuery):
     new_val = 0 if get_glob(btn) else 1
     msg = query.message.text
     set_glob(btn, new_val)
+    SETTINGS = update_settings()
     await query.answer("Settings saved 👌")
     inline_kb = collect_buttons(SETTINGS, close=True)
     await bot.edit_message_text(msg, ADMIN, msg_id,
@@ -378,7 +405,7 @@ async def echo_result(message: types.Message):
             return
     sent = await message.answer('📝')
     t_start = t.time()
-    result = await translate(uid, message.text)
+    result = await translate(uid, message.text, BROWSER_EP)
     t_diff = (t.time() - t_start)
     if filter_output(result):
         msg += debug(f"Translation took {sec_to_time(t_diff)}" + N, uid)
@@ -399,6 +426,6 @@ if __name__ == '__main__':
     if not p(USER_DATA / f'{ADMIN}.ini').exists():
         print("There's no admin defaults, creating...")
         user_init(ADMIN)
-    SETTINGS = {}
-    update_settings()
+    SETTINGS = update_settings()
+    dp.loop.create_task(open_browser())
     executor.start_polling(dp, skip_updates=True)
