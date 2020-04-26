@@ -34,7 +34,7 @@ def ini(section, key):
     return config[section][key].strip('"')
 
 config = configparser.ConfigParser()
-config.read('../../caf.ini.php')
+config.read('../../../caf.ini.php')
 TOKEN = ini('API Settings', 'deepl_token')
 ADMIN = int(ini('API Settings', 'egor'))
 TESTERS = (
