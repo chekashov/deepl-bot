@@ -132,3 +132,4 @@ dmypy.json
 .ht*
 robots.txt
 nohup.out
+._nohup.out
