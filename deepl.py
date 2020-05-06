@@ -12,7 +12,7 @@ Quick start:
 - ADMIN (admin ID)
 
 2. Run bot in background
-$ python3 deepl.py &
+$ nohup python3 deepl.py &
 
 3. Stop bot gracefully
 $ pkill -f 'Python deepl.py'
@@ -368,7 +368,7 @@ async def callback_admin(query: types.CallbackQuery):
     new_val = 0 if get_glob(btn) else 1
     msg = query.message.text
     set_glob(btn, new_val)
-    SETTINGS = update_settings()
+    globals()['SETTINGS'] = update_settings()
     await query.answer("Settings saved 👌")
     inline_kb = collect_buttons(SETTINGS, close=True)
     await bot.edit_message_text(msg, ADMIN, msg_id,
