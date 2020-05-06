@@ -19,6 +19,7 @@ $ pkill -f 'Python deepl.py'
 """
 
 import configparser
+import asyncio
 import time as t
 import logging
 from pathlib import Path as p
@@ -47,6 +48,7 @@ config.clear()
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
+WORKERS = 4
 BASE_URL = "https://www.deepl.com/translator"
 TRG = '[dl-test="translator-target-input"]'
 TRG_JS = "document.querySelector('" + TRG + "').value"
@@ -154,6 +156,7 @@ def get_button(conf, txt):
 def update_settings():
     """ Returns global settings that are stored in RAM
     """
+    global SETTINGS
     set_dict = {
         'forward': [
             get_conf(ADMIN, 'forward'),
@@ -168,7 +171,7 @@ def update_settings():
             get_button('public', 'Public')
         ]
     }
-    return set_dict
+    SETTINGS = set_dict
 
 def sec_to_time(sec):
     """ Returns the formatted time H:MM:SS
@@ -248,17 +251,35 @@ async def open_browser():
     """ Opens the new Chromium instance
     """
     global BROWSER_EP
-    browser = await pp.launch()
-    await browser.disconnect()
-    BROWSER_EP = browser.wsEndpoint
+    end_points = []
+    for i in range(WORKERS):
+        print(f"> Browser {i+1}:")
+        browser = await pp.launch()
+        page = (await browser.pages())[0]
+        await page.setRequestInterception(True)
+        page.on('request', lambda req: asyncio.ensure_future(intercept(req)))
+        await page.goto(BASE_URL)
+        print(f"> Pages: {await browser.pages()}")
+        await browser.disconnect()
+        end_points += [browser.wsEndpoint]
+    BROWSER_EP = [1, *end_points]
+    print(BROWSER_EP)
 
-async def translate(uid, txt, ep):
+async def translate(uid, txt):
     """ Filters input and returns the translated text
     """
+    global BROWSER_EP
     # Define variables
+    inst = BROWSER_EP[0]
+    ep = BROWSER_EP[inst]
     browser = await pp.connect(browserWSEndpoint=ep)
-    page = await browser.newPage()
+    page = (await browser.pages())[0]
+    print(f"> Instance {inst}, endpoint {ep}")
+    print(f"> Page id {page}")
+    print(f"> Pages: {await browser.pages()}")
     lang = get_conf(uid, 'lang')
+    # Increment an instance
+    BROWSER_EP[0] = BROWSER_EP[0] + 1 if BROWSER_EP[0] < WORKERS else 1
     # Sanitize input
     txt = txt.replace('\n', '%0A')
     txt = txt.replace('\t', '%09')
@@ -272,10 +293,30 @@ async def translate(uid, txt, ep):
         pass
     result = await page.evaluate(TRG_JS)
     # await page.screenshot({'path': 'before_close.png'})
-    await page.close()
     await browser.disconnect()
-    return result
+    return result, ep
 
+async def prep_instance(ep):
+    """ Prepare browser for the next request
+    """
+    browser = await pp.connect(browserWSEndpoint=ep)
+    page = (await browser.pages())[0]
+    print(f"> Cleaing up page: {page}")
+    await page.close()
+    page = await browser.newPage()
+    await page.setRequestInterception(True)
+    page.on('request', lambda req: asyncio.ensure_future(intercept(req)))
+    print(f"> New page created: {await browser.pages()}")
+    await page.goto(BASE_URL)
+    await browser.disconnect()
+
+async def intercept(request):
+    """ Filter requests and ignore media
+    """
+    if request.url.endswith('.png') or request.url.endswith('.jpg'):
+        await request.abort()
+    else:
+        await request.continue_()
 
 # Handlers
 @dp.message_handler(commands=['start'])
@@ -368,7 +409,7 @@ async def callback_admin(query: types.CallbackQuery):
     new_val = 0 if get_glob(btn) else 1
     msg = query.message.text
     set_glob(btn, new_val)
-    globals()['SETTINGS'] = update_settings()
+    update_settings()
     await query.answer("Settings saved 👌")
     inline_kb = collect_buttons(SETTINGS, close=True)
     await bot.edit_message_text(msg, ADMIN, msg_id,
@@ -405,7 +446,7 @@ async def echo_result(message: types.Message):
             return
     sent = await message.answer('📝')
     t_start = t.time()
-    result = await translate(uid, message.text, BROWSER_EP)
+    result, ep = await translate(uid, message.text)
     t_diff = (t.time() - t_start)
     if filter_output(result):
         msg += debug(f"Translation took {sec_to_time(t_diff)}" + N, uid)
@@ -417,6 +458,8 @@ async def echo_result(message: types.Message):
     else:
         await bot.delete_message(sent.chat.id, sent.message_id)
     inc_stat(uid, 'total')
+    await prep_instance(ep)
+
 
 
 if __name__ == '__main__':
@@ -426,6 +469,6 @@ if __name__ == '__main__':
     if not p(USER_DATA / f'{ADMIN}.ini').exists():
         print("There's no admin defaults, creating...")
         user_init(ADMIN)
-    SETTINGS = update_settings()
+    update_settings()
     dp.loop.create_task(open_browser())
     executor.start_polling(dp, skip_updates=True)
