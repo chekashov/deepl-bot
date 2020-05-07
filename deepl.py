@@ -43,15 +43,26 @@ TESTERS = (
     int(ini('API Settings', 'vika'))
 )
 USER_DATA = p('../../deepl-data')
+SETTINGS = {}
 config.clear()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
 WORKERS = 4
+BROWSER_EP = []
 BASE_URL = "https://www.deepl.com/translator"
 TRG = '[dl-test="translator-target-input"]'
 TRG_JS = "document.querySelector('" + TRG + "').value"
+BLOCK_REQ = (
+    '.png',
+    '.woff',
+    'fonts.',
+    '.php',
+    '.svg',
+    '.gif',
+    'analytics.js'
+)
 ROW_WIDTH = 2 # Inline keyboard
 N = "\n"
 LANG = {
@@ -251,32 +262,37 @@ async def open_browser():
     """ Opens the new Chromium instance
     """
     global BROWSER_EP
+    log = get_glob('debug')
     end_points = []
     for i in range(WORKERS):
-        print(f"> Browser {i+1}:")
+        if log:
+            print(f"> Browser {i+1}:")
         browser = await pp.launch()
         page = (await browser.pages())[0]
         await page.setRequestInterception(True)
-        page.on('request', lambda req: asyncio.ensure_future(intercept(req)))
+        page.on('request', lambda req: asyncio.ensure_future(filt(req)))
         await page.goto(BASE_URL)
-        print(f"> Pages: {await browser.pages()}")
+        if log:
+            print(f"> Pages: {await browser.pages()}")
         await browser.disconnect()
         end_points += [browser.wsEndpoint]
     BROWSER_EP = [1, *end_points]
-    print(BROWSER_EP)
+    if log:
+        print(BROWSER_EP)
 
 async def translate(uid, txt):
     """ Filters input and returns the translated text
     """
     global BROWSER_EP
+    log = get_glob('debug')
     # Define variables
     inst = BROWSER_EP[0]
     ep = BROWSER_EP[inst]
     browser = await pp.connect(browserWSEndpoint=ep)
     page = (await browser.pages())[0]
-    print(f"> Instance {inst}, endpoint {ep}")
-    print(f"> Page id {page}")
-    print(f"> Pages: {await browser.pages()}")
+    if log:
+        print(f"> Instance {inst}, endpoint {ep}")
+        print(f"> Page id {page}")
     lang = get_conf(uid, 'lang')
     # Increment an instance
     BROWSER_EP[0] = BROWSER_EP[0] + 1 if BROWSER_EP[0] < WORKERS else 1
@@ -299,24 +315,32 @@ async def translate(uid, txt):
 async def prep_instance(ep):
     """ Prepare browser for the next request
     """
+    log = get_glob('debug')
     browser = await pp.connect(browserWSEndpoint=ep)
     page = (await browser.pages())[0]
-    print(f"> Cleaing up page: {page}")
+    if log:
+        print(f"> Cleaing up page: {page}")
     await page.close()
     page = await browser.newPage()
     await page.setRequestInterception(True)
-    page.on('request', lambda req: asyncio.ensure_future(intercept(req)))
-    print(f"> New page created: {await browser.pages()}")
+    page.on('request', lambda req: asyncio.ensure_future(filt(req)))
+    if log:
+        print(f"> New page created: {await browser.pages()}")
     await page.goto(BASE_URL)
     await browser.disconnect()
 
-async def intercept(request):
+async def filt(request):
     """ Filter requests and ignore media
     """
-    if request.url.endswith('.png') or request.url.endswith('.jpg'):
+    log = get_glob('debug')
+    if any(blocked in request.url for blocked in BLOCK_REQ):
         await request.abort()
+        if log:
+            print(f"Request blocked: {request.url}")
     else:
         await request.continue_()
+        if log:
+            print(f"Request passed: {request.url}")
 
 # Handlers
 @dp.message_handler(commands=['start'])
@@ -449,6 +473,9 @@ async def echo_result(message: types.Message):
     result, ep = await translate(uid, message.text)
     t_diff = (t.time() - t_start)
     if filter_output(result):
+        print(f"[ {message.date} ] " +
+            f"{len(message.text.split())} words > " +
+            f"{len(result.split())} words. {sec_to_time(t_diff)}")
         msg += debug(f"Translation took {sec_to_time(t_diff)}" + N, uid)
         msg += filter_output(result)
         sent = await bot.edit_message_text(msg, uid, sent.message_id)
