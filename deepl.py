@@ -1,32 +1,36 @@
 #!/usr/local/bin/python3
 # Copyright 2020 Egor Chekashov
 
-"""DeepL Telegram v0.4
+"""DeepL Telegram v0.5
 
 Telegram bot that translates messages via DeepL Translator.
 The world’s best machine translation - www.deepl.com
 
 Quick start:
-1. Change basic config
-- TOKEN (Telegram Bot Token)
-- ADMIN (admin ID)
+1. Set path to the INI file
+Line 42, config.read
 
-2. Run bot in background
+2. Change basic INI config
+- deepl_token (Telegram Bot Token)
+- admin (User ID)
+- tester (User ID, optional)
+
+3. Run bot in background
 $ nohup python3 deepl.py &
 
-3. Stop bot gracefully
+4. Stop bot gracefully
 $ pkill -f 'Python deepl.py'
 """
 
 import configparser
-import asyncio
+from asyncio import ensure_future
 import time as t
 import logging
 from pathlib import Path as p
 import pyppeteer as pp
 from aiogram import Bot, Dispatcher, executor, types
 
-VERSION = '0.4'
+VERSION = '0.5'
 
 # Main config
 def ini(section, key):
@@ -37,10 +41,10 @@ def ini(section, key):
 config = configparser.ConfigParser()
 config.read('../../../caf.ini.php')
 TOKEN = ini('API Settings', 'deepl_token')
-ADMIN = int(ini('API Settings', 'egor'))
+ADMIN = int(ini('API Settings', 'admin'))
 TESTERS = (
-    int(ini('API Settings', 'jenya')),
-    int(ini('API Settings', 'vika'))
+    int(ini('API Settings', 'tester1')),
+    int(ini('API Settings', 'tester2'))
 )
 USER_DATA = p('../../deepl-data')
 SETTINGS = {}
@@ -270,7 +274,7 @@ async def open_browser():
         browser = await pp.launch()
         page = (await browser.pages())[0]
         await page.setRequestInterception(True)
-        page.on('request', lambda req: asyncio.ensure_future(filt(req)))
+        page.on('request', lambda req: ensure_future(filter_req(req)))
         await page.goto(BASE_URL)
         if log:
             print(f"> Pages: {await browser.pages()}")
@@ -289,13 +293,14 @@ async def translate(uid, txt):
     inst = BROWSER_EP[0]
     ep = BROWSER_EP[inst]
     browser = await pp.connect(browserWSEndpoint=ep)
+    # Increment an instance
+    BROWSER_EP[0] = BROWSER_EP[0] + 1 if BROWSER_EP[0] < WORKERS else 1
+    # Get prepared page
     page = (await browser.pages())[0]
     if log:
         print(f"> Instance {inst}, endpoint {ep}")
         print(f"> Page id {page}")
     lang = get_conf(uid, 'lang')
-    # Increment an instance
-    BROWSER_EP[0] = BROWSER_EP[0] + 1 if BROWSER_EP[0] < WORKERS else 1
     # Sanitize input
     txt = txt.replace('\n', '%0A')
     txt = txt.replace('\t', '%09')
@@ -304,7 +309,7 @@ async def translate(uid, txt):
     await page.goto(f"{BASE_URL}#*/{lang}/{txt}")
     try:
         trg_len = TRG_JS + '.length > 0'
-        await page.waitForFunction(trg_len, timeout=10000)
+        await page.waitForFunction(trg_len, timeout=5000)
     except pp.errors.TimeoutError:
         pass
     result = await page.evaluate(TRG_JS)
@@ -323,13 +328,13 @@ async def prep_instance(ep):
     await page.close()
     page = await browser.newPage()
     await page.setRequestInterception(True)
-    page.on('request', lambda req: asyncio.ensure_future(filt(req)))
+    page.on('request', lambda req: ensure_future(filter_req(req)))
     if log:
         print(f"> New page created: {await browser.pages()}")
     await page.goto(BASE_URL)
     await browser.disconnect()
 
-async def filt(request):
+async def filter_req(request):
     """ Filter requests and ignore media
     """
     log = get_glob('debug')
