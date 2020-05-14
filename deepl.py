@@ -1,7 +1,7 @@
 #!/usr/local/bin/python3
 # Copyright 2020 Egor Chekashov
 
-"""DeepL Telegram v0.5
+""" DeepL Telegram v0.5
 
 Telegram bot that translates messages via DeepL Translator.
 The world’s best machine translation - www.deepl.com
@@ -23,7 +23,7 @@ $ pkill -f 'Python deepl.py'
 """
 
 import configparser
-from asyncio import ensure_future
+from asyncio import ensure_future, run
 import time as t
 import logging
 from pathlib import Path as p
@@ -502,5 +502,5 @@ if __name__ == '__main__':
         print("There's no admin defaults, creating...")
         user_init(ADMIN)
     update_settings()
-    dp.loop.create_task(open_browser())
+    run(open_browser())
     executor.start_polling(dp, skip_updates=True)
