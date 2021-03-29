@@ -23,12 +23,13 @@ $ pkill -f 'Python deepl.py'
 """
 
 import configparser
-from asyncio import ensure_future, run
+from asyncio import ensure_future, get_event_loop
 import time as t
 import logging
 from pathlib import Path as p
 import pyppeteer as pp
 from aiogram import Bot, Dispatcher, executor, types
+import atexit
 
 VERSION = '0.5'
 
@@ -271,7 +272,7 @@ async def open_browser():
     for i in range(WORKERS):
         if log:
             print(f"> Browser {i+1}:")
-        browser = await pp.launch()
+        browser = await pp.launch(handleSIGINT=False, handleSIGTERM=False)
         page = (await browser.pages())[0]
         await page.setRequestInterception(True)
         page.on('request', lambda req: ensure_future(filter_req(req)))
@@ -346,6 +347,11 @@ async def filter_req(request):
         await request.continue_()
         if log:
             print(f"Request passed: {request.url}")
+
+def shutdown():
+    for ep in BROWSER_EP:
+        browser = pp.connect(browserWSEndpoint=ep)
+        browser.close()
 
 # Handlers
 @dp.message_handler(commands=['start'])
@@ -502,5 +508,6 @@ if __name__ == '__main__':
         print("There's no admin defaults, creating...")
         user_init(ADMIN)
     update_settings()
-    run(open_browser())
+    atexit.register(shutdown)
+    get_event_loop().run_until_complete(open_browser())
     executor.start_polling(dp, skip_updates=True)
