@@ -27,9 +27,10 @@ from asyncio import ensure_future, get_event_loop
 import time as t
 import logging
 from pathlib import Path as p
+import signal
+import sys
 import pyppeteer as pp
 from aiogram import Bot, Dispatcher, executor, types
-import atexit
 
 VERSION = '0.5'
 
@@ -348,10 +349,12 @@ async def filter_req(request):
         if log:
             print(f"Request passed: {request.url}")
 
-def shutdown():
+def cleanup(*args):
     for ep in BROWSER_EP:
         browser = pp.connect(browserWSEndpoint=ep)
         browser.close()
+    sys.exit(0)
+
 
 # Handlers
 @dp.message_handler(commands=['start'])
@@ -501,6 +504,8 @@ async def echo_result(message: types.Message):
 
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
     if not USER_DATA.exists():
         print("There's no directory for storing settings, creating...")
         USER_DATA.mkdir()
@@ -508,6 +513,5 @@ if __name__ == '__main__':
         print("There's no admin defaults, creating...")
         user_init(ADMIN)
     update_settings()
-    atexit.register(shutdown)
     get_event_loop().run_until_complete(open_browser())
     executor.start_polling(dp, skip_updates=True)
